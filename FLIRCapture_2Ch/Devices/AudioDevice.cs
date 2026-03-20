@@ -4,6 +4,8 @@ using System.IO;
 using System.Threading;
 using NAudio.Wave;
 using FLIRcapture_2Ch;
+using FLIRcapture_2Ch.Utilities;
+
 
 namespace FLIRcapture_2Ch.Devices
 {
@@ -18,7 +20,7 @@ namespace FLIRcapture_2Ch.Devices
 
         private WaveFormat _waveFormat;
         private long _totalSamples;             // accumulated samples written
-        private double _binSizeSec;             // from Config.TimestampBinSizeSec
+        private double _binSizeSec;             // from Config.Log.TimestampBinSizeSec
         private double _nextBinEndSec;
         private readonly object _binLock = new object();
         private volatile bool _markerFlag;
@@ -35,8 +37,8 @@ namespace FLIRcapture_2Ch.Devices
 
             // Pull from your Config.cs
             int sampleRate = Config.Audio.SampleRate;      // 384000 (validate device support)
-            int bitDepth   = Config.Audio.BitDepth;        // 16
-            int channels   = Config.Audio.Channels;        // 1
+            int bitDepth = Config.Audio.BitDepth;        // 16
+            int channels = Config.Audio.Channels;        // 1
 
             _waveFormat = new WaveFormat(sampleRate, bitDepth, channels);
 
@@ -56,7 +58,7 @@ namespace FLIRcapture_2Ch.Devices
                 _csvWriter.WriteLine("BinEndTimeSec,WallClockISO,Marker,DeviceIndex,SampleRate,Channels,BitDepth");
             }
 
-            _binSizeSec = Config.TimestampBinSizeSec;   // 0.02 s
+            _binSizeSec = Config.Log.TimestampBinSizeSec;   // 0.02 s
             _nextBinEndSec = _binSizeSec;
             _totalSamples = 0;
             DeviceIndex = deviceIndex;

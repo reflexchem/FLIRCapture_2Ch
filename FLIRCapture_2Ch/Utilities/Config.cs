@@ -1,4 +1,4 @@
-namespace FLIRcapture_2Ch
+namespace FLIRcapture_2Ch.Utilities
 {
     public static class Config
     {
@@ -13,14 +13,23 @@ namespace FLIRcapture_2Ch
 
         public static class Audio
         {
+            // Audio defaults
             public const int SampleRate = 384000;               // Hz
             public const int BitDepth = 16;
             public const int Channels = 1;                      // 1 = Mono
 
         }
-        // Audio defaults
+
+        public static class Path
+        {
+            public const string OutputDirectory = null; // Catch if no output directory is selected at GUI
+        }
 
         // Logging
-        public const double TimestampBinSizeSec = 0.02;     // seconds
+        public static class Log
+        {
+            public const double TimestampBinSizeSec = 0.02;     // seconds
+        }
+
     }
 }

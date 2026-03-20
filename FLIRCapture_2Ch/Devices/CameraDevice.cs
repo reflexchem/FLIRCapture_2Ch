@@ -7,8 +7,9 @@ using OpenCvSharp;
 using OpenCvSharp.Extensions;
 using SpinnakerNET;
 using SpinnakerNET.GenApi;
-using SpinnakerNET.GenICam;
 using FLIRcapture_2Ch;
+using FLIRcapture_2Ch.Utilities;
+
 
 namespace FLIRcapture_2Ch.Devices
 {
@@ -48,6 +49,21 @@ namespace FLIRcapture_2Ch.Devices
             _onError = onError;
         }
 
+        // Define 'TrySetInt()'
+        private static void TrySetInt(INodeMap nodeMap, string nodeName, long value)
+        {
+            try
+            {
+                var node = nodeMap.GetNode<IInteger>(nodeName);
+                if (node != null && node.IsWritable)
+                {
+                    long v = Math.Max(node.Min, Math.Min(node.Max, value));
+                    node.Value = v;
+                }
+            }
+            catch { }
+        }
+
         public void Initialize(string cameraIdOrIndex, string videoPath, double? targetFps = null)
         {
             if (IsRunning) throw new InvalidOperationException("Camera running.");
@@ -82,7 +98,6 @@ namespace FLIRcapture_2Ch.Devices
             finally
             {
                 list.Clear();
-                list.Dispose();
             }
 
             // Init and read serial
@@ -114,8 +129,15 @@ namespace FLIRcapture_2Ch.Devices
             // Buffer handling
             TrySetEnum(_camera.GetTLStreamNodeMap(), "StreamBufferHandlingMode", "NewestOnly");
 
+            // Ensure sufficient stream buffers
+            var streamMap = _camera.GetTLStreamNodeMap();
+            TrySetEnum(streamMap, "StreamBufferCountMode", "Manual");
+            TrySetInt(streamMap, "StreamBufferCountManual", 16);
+
+
+
             // Processing
-            _processor.SetColorProcessing(ColorProcessingAlgorithm.EdgeSensing);
+            _processor.SetColorProcessing(ColorProcessingAlgorithm.HQ_LINEAR);
 
             // CSV
             _csv = new StreamWriter(_csvPath);
@@ -132,6 +154,7 @@ namespace FLIRcapture_2Ch.Devices
 
             _cts = new CancellationTokenSource();
             _camera.BeginAcquisition();
+            Thread.Sleep(200);
             _sw.Restart();
 
             _worker = new Thread(() => CaptureLoop(_cts.Token))
@@ -193,59 +216,118 @@ namespace FLIRcapture_2Ch.Devices
             {
                 while (!ct.IsCancellationRequested)
                 {
-                    using (var raw = _camera.GetNextImage(1000))
+                    using (var raw = _camera.GetNextImage(5000))
                     {
-                        if (raw == null || !raw.IsValid)
+                        if (raw == null)
                         {
-                            WriteRow(_frameIndex, _sw.Elapsed.TotalSeconds, "Timeout", triggered: 0);
+                            WriteRow(_frameIndex, _sw.Elapsed.TotalSeconds, "Timeout", 0);
                             continue;
                         }
+
                         if (raw.IsIncomplete)
                         {
-                            WriteRow(_frameIndex, _sw.Elapsed.TotalSeconds, "Incomplete", triggered: 0);
+                            WriteRow(_frameIndex, _sw.Elapsed.TotalSeconds, "Incomplete", 0);
                             continue;
                         }
 
-                        using (var bgr = new ManagedImage())
+                        using (var processed = new ManagedImage())
                         {
-                            _processor.Convert(raw, bgr, PixelFormatEnums.BGR8);
+                            // Detect mono vs color
+                            var pf = raw.PixelFormat;
 
-                            int width = (int)bgr.Width;
-                            int height = (int)bgr.Height;
+                            bool isMono =
+                                pf == PixelFormatEnums.Mono8 ||
+                                pf == PixelFormatEnums.Mono12 ||
+                                pf == PixelFormatEnums.Mono16;
+
+                            if (isMono)
+                            {
+                                // Mono → Mono8
+                                _processor.Convert(raw, processed, PixelFormatEnums.Mono8);
+                            }
+                            else
+                            {
+                                // Bayer / color → BGR8
+                                _processor.SetColorProcessing(ColorProcessingAlgorithm.HQ_LINEAR);
+                                _processor.Convert(raw, processed, PixelFormatEnums.BGR8);
+                            }
+
+                            int width = (int)processed.Width;
+                            int height = (int)processed.Height;
 
                             if (_writer == null)
                             {
-                                // Prefer MP4; fallback to AVI MJPG if MP4 not available in your OpenCV runtime
                                 if (!TryOpenVideoWriterMp4(width, height, Config.Camera.FrameRate))
                                 {
                                     if (!TryOpenVideoWriterAviMjpg(width, height, Config.Camera.FrameRate))
-                                        throw new InvalidOperationException("Failed to open video writer (MP4 and AVI both failed).");
+                                    {
+                                        throw new InvalidOperationException(
+                                            "Failed to open video writer (MP4 and AVI both failed).");
+                                    }
                                 }
                             }
 
-                            using (var mat = new Mat(height, width, MatType.CV_8UC3, bgr.DataPtr, bgr.Stride))
+                            if (isMono)
                             {
-                                _writer.Write(mat);
-
-                                // Log timing
-                                double rel = _sw.Elapsed.TotalSeconds;
-                                WriteRow(_frameIndex, rel, "OK", triggered: 0);
-
-                                // Preview
-                                if (_onFrame != null)
+                                // Mono preview: expand to BGR for OpenCV
+                                using (var monoMat = Mat.FromPixelData(height, width, MatType.CV_8UC1,
+                                                             processed.DataPtr, processed.Stride))
+                                using (var bgrMat = new Mat())
                                 {
-                                    Bitmap bmp = BitmapConverter.ToBitmap(mat);
-                                    _onFrame.Invoke(bmp);
-                                }
+                                    Cv2.CvtColor(monoMat, bgrMat, ColorConversionCodes.GRAY2BGR);
 
-                                _frameIndex++;
+                                    _writer.Write(bgrMat);
+
+                                    double rel = _sw.Elapsed.TotalSeconds;
+                                    WriteRow(_frameIndex, rel, "OK", 0);
+
+                                    if (_onFrame != null)
+                                    {
+                                        Bitmap bmp = BitmapConverter.ToBitmap(bgrMat);
+                                        _onFrame.Invoke(bmp);
+                                    }
+                                }
                             }
+                            else
+                            {
+                                using (var mat = Mat.FromPixelData(height, width, MatType.CV_8UC3,
+                                                         processed.DataPtr, processed.Stride))
+                                {
+                                    _writer.Write(mat);
+
+                                    double rel = _sw.Elapsed.TotalSeconds;
+                                    WriteRow(_frameIndex, rel, "OK", 0);
+
+                                    if (_onFrame != null)
+                                    {
+                                        Bitmap bmp = BitmapConverter.ToBitmap(mat);
+                                        _onFrame.Invoke(bmp);
+                                    }
+                                }
+                            }
+
+                            _frameIndex++;
                         }
                     }
                 }
             }
             catch (ThreadInterruptedException) { }
             catch (OperationCanceledException) { }
+            catch (SpinnakerException ex)
+            {
+                _onError?.Invoke($"Camera loop error: {ex.Message}");
+
+                // GenTL timeout / buffer error → restart acquisition
+                try
+                {
+                    _camera.EndAcquisition();
+                    Thread.Sleep(200);
+                    _camera.BeginAcquisition();
+                }
+                catch { }
+
+                Thread.Sleep(500);
+            }
             catch (Exception ex)
             {
                 _onError?.Invoke($"Camera loop error: {ex.Message}");

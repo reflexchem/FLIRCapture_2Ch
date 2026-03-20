@@ -1,6 +1,7 @@
 using System;
 using System.Drawing;
 using System.IO;
+using FLIRcapture_2Ch;
 using FLIRcapture_2Ch.Devices;
 
 namespace FLIRcapture_2Ch.Utilities
@@ -37,7 +38,7 @@ namespace FLIRcapture_2Ch.Utilities
             _onError = onError;
             _enableAudioCsv = enableAudioCsv;
         }
-        
+
 
         public void Start()
         {
